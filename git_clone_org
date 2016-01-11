@@ -1,58 +1,90 @@
-#! /usr/local/bin/node
+#!/usr/bin/env python2
 
-var exec = require('child_process').exec;
-var readline = require('readline').createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+"""
+    Github Org-wide repo cloner utillity.
+"""
 
-function Cloner() {
-  readline.question('Enter your organization name: ', this.onOrgName.bind(this));
-};
+from __future__ import print_function
 
-Cloner.prototype.onOrgName = function(orgName) {
-  this.orgName = orgName;
-  readline.question('Where would you like the org cloned to? ', this.onPath.bind(this));
-  readline.write(process.cwd());
-}
+import argparse
+import json
+import os
+import subprocess
+import urllib2
 
-Cloner.prototype.onPath = function(path) {
-  this.path = path;
-  readline.question('Enter your personal access token (https://github.com/settings/applications#personal-access-tokens): ', this.onAccessToken.bind(this));
-}
+ARGP = argparse.ArgumentParser(
+    description=__doc__,
+    formatter_class=argparse.RawTextHelpFormatter,
+)
+ARGP.add_argument('org', help='Github Organization Name')
+ARGP.add_argument('target', nargs='?', help='Target directory for new repos.')
+ARGP.add_argument('--oauth', '-a', help='Github Personal OAuth Token.')
 
-Cloner.prototype.onAccessToken = function(accessToken) {
-  readline.close();
-  var _this = this;
 
-  try {
-    process.chdir(this.path);
-  }
-  catch(e) {
-    process.stdout.write('chdir: ' + e);
-    return 0;
-  }
+class OrgClone(object):
+    """
+        Github Org-wide clone multiplexer.
+    """
 
-  var apiCmd = 'curl -sS -u ' + accessToken + ':x-oauth-basic https://api.github.com/orgs/' + this.orgName + '/repos';
-  exec(apiCmd, function(error, stdout, stderr) {
-    _this.repos = JSON.parse(stdout);
-    if(_this.repos.length) {
-      _this.cloneRepo(0);
-    }
-    else {
-      process.stdout.write("No available repos.\n");
-    }
-  });
-}
+    github_org_repos_fmt = 'https://api.github.com/orgs/{org}/repos'
+    headers = None
 
-Cloner.prototype.cloneRepo = function(index) {
-  var _this = this;
-  var repo = _this.repos[index];
-  process.stdout.write("Cloning " + repo.name + "\n");
-  exec('git clone ' + repo.ssh_url, function(error, stdout, stderr) {
-    if(error) process.stderr.write("Error cloning "  + repo.name + ": " + error + "\n");
-    if(index < _this.repos.length - 1) _this.cloneRepo(index + 1);
-  });
-}
+    def __init__(self, org, targetpath=None, oauth_token=None, git_url=None):
+        super(OrgClone, self).__init__()
+        self.org = org
+        self.targetpath = (targetpath if targetpath else org)
+        self.oauth_token = oauth_token
+        self.git_url = (git_url if git_url else 'git_url')
 
-module.exports = new Cloner();
+        self.headers = dict()
+        if self.oauth_token:
+            self.headers['Authorization'] = 'token: {}'.format(self.oauth_token)
+
+    def fetch_org_repos(self):
+        """
+            Query Github api for list of repos to clone.
+        """
+
+        request = urllib2.Request(
+            self.github_org_repos_fmt.format(org=self.org),
+            headers=self.headers
+        )
+        org_repos = json.loads(urllib2.urlopen(request).read())
+
+        return org_repos
+
+    def clone_all(self):
+        """
+            Multiplex repos
+        """
+        org_repos = self.fetch_org_repos()
+        for repo in org_repos:
+            self.clone_repo(repo)
+
+    def clone_repo(self, repo):
+        """
+            Shell out the `git clone` command.
+        """
+        try:
+            os.makedirs(self.targetpath)
+            print('Directory Created: `{}`'.format(self.targetpath))
+        except OSError:
+            pass
+
+        subprocess.call(
+            ['git', 'clone', repo[self.git_url]],
+            cwd=self.targetpath
+        )
+
+
+def main(argp=None):
+    """
+        CLI Main
+    """
+    if argp is None:
+        argp = ARGP.parse_args()
+
+    exit(OrgClone(argp.org, argp.target, argp.oauth).clone_all())
+
+if __name__ == '__main__':
+    main()
